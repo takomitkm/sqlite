@@ -2137,6 +2137,76 @@ int sqlite3_fullsync_count = 0;
 /*
 ** Make sure all writes to a particular file are committed to disk.
 */
+/*
+** Open the directory that contains zPath and call FlushFileBuffers() on
+** it, so that namespace changes (creations and deletions of files in
+** that directory) are persisted.  This is the Windows counterpart of the
+** directory fsync performed by the unix VFS.
+**
+** FlushFileBuffers() on a directory handle requires GENERIC_WRITE and
+** FILE_FLAG_BACKUP_SEMANTICS, and succeeds without administrator
+** privileges on NTFS.  The filesystem-level behavior is documented by
+** MS-FSA section 2.1.5.7 (product note <80>, implemented by NTFS); no
+** Win32 documentation establishes namespace durability across power
+** loss, so this call requests parity with the unix VFS without claiming
+** conclusive crash durability.
+**
+** Unlike the unix VFS, which silently ignores a failure to open or sync
+** the directory (some unix systems cannot fsync a directory at all),
+** failures are reported here as SQLITE_IOERR_DIR_FSYNC: on Windows the
+** call is expected to work, so a failure is a real I/O error and the
+** caller is entitled to know that the requested durability did not
+** happen.
+*/
+static int winSyncDirectory(const char *zPath){
+  LPWSTR zWidePath = winConvertFromUtf8Filename(zPath);
+  LPWSTR zDir;
+  HANDLE hDir;
+  size_t n, i;
+  int rc = SQLITE_OK;
+  if( zWidePath==0 ) return SQLITE_NOMEM;
+  n = wcslen(zWidePath);
+  zDir = sqlite3_malloc64((n+3)*sizeof(WCHAR));
+  if( zDir==0 ){
+    sqlite3_free(zWidePath);
+    return SQLITE_NOMEM;
+  }
+  memcpy(zDir, zWidePath, (n+1)*sizeof(WCHAR));
+  sqlite3_free(zWidePath);
+  for(i=n; i>0 && zDir[i-1]!=L'/' && zDir[i-1]!=L'\\'; i--){}
+  if( i==0 ){
+    /* No separator: nothing to sync.  The unix VFS behaves the same way
+    ** (openDirectory() only opens a directory for paths that contain a
+    ** '/'). */
+    sqlite3_free(zDir);
+    return SQLITE_OK;
+  }
+  zDir[i] = 0;
+  if( i>1 && zDir[i-1]==L':' ){
+    zDir[i] = L'\\';         /* drive-relative "C:" -> "C:\\" */
+    zDir[i+1] = 0;
+  }
+  hDir = osCreateFileW(zDir,
+                       GENERIC_WRITE,
+                       FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if( hDir==INVALID_HANDLE_VALUE ){
+    rc = winLogError(SQLITE_IOERR_DIR_FSYNC, osGetLastError(),
+                     "winSyncDirectory", zPath);
+  }else{
+    if( !osFlushFileBuffers(hDir) ){
+      rc = winLogError(SQLITE_IOERR_DIR_FSYNC, osGetLastError(),
+                       "winSyncDirectory", zPath);
+    }
+    if( !osCloseHandle(hDir) && rc==SQLITE_OK ){
+      rc = winLogError(SQLITE_IOERR_DIR_FSYNC, osGetLastError(),
+                       "winSyncDirectory", zPath);
+    }
+  }
+  sqlite3_free(zDir);
+  return rc;
+}
+
 static int winSync(sqlite3_file *id, int flags){
 #ifndef SQLITE_NO_SYNC
   /*
@@ -4599,6 +4669,12 @@ static int winDelete(
     rc = winLogError(SQLITE_IOERR_DELETE, lastErrno, "winDelete", zFilename);
   }else{
     winLogIoerr(cnt, __LINE__);
+  }
+  if( rc==SQLITE_OK && (syncDir & 1)!=0 ){
+    /* Sync the directory so the deletion is durable, mirroring the unix
+    ** VFS.  Reached only when the pager runs with synchronous=EXTRA (or
+    ** on a batch-atomic filesystem). */
+    rc = winSyncDirectory(zFilename);
   }
   sqlite3_free(zConverted);
   OSTRACE(("DELETE name=%s, rc=%s\n", zFilename, sqlite3ErrName(rc)));
