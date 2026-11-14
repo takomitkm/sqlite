@@ -2156,12 +2156,20 @@ int sqlite3_fullsync_count = 0;
 ** loss, so this call requests parity with the unix VFS without claiming
 ** conclusive crash durability.
 **
-** Unlike the unix VFS, which silently ignores a failure to open or sync
-** the directory (some unix systems cannot fsync a directory at all),
-** failures are reported here as SQLITE_IOERR_DIR_FSYNC: on Windows the
-** call is expected to work, so a failure is a real I/O error and the
-** caller is entitled to know that the requested durability did not
-** happen.
+** Both callers in this VFS pass a full path: winSync() uses pFile->zPath
+** and winDelete() uses the pager's zFilename, both of which have been
+** through xFullPathname().  A bare relative name that reaches here (for
+** example from the standalone test/dirsyncprobe.c, which calls the VFS
+** directly) resolves to the process working directory through L".",
+** which is what the unix VFS does.  Windows drive-relative names such as
+** "C:foo" are not produced by those callers and are not handled here.
+**
+** The current proposal reports directory-open, flush, and close
+** failures as SQLITE_IOERR_DIR_FSYNC, unlike the unix VFS which silently
+** ignores them (some unix systems cannot fsync a directory at all).
+** Whether filesystem-specific errors indicating an unsupported
+** directory flush should be treated differently is a policy question
+** for review.
 */
 static LPWSTR winConvertFromUtf8Filename(const char *zFilename);
 static int winSyncDirectory(const char *zPath){
@@ -2192,10 +2200,6 @@ static int winSyncDirectory(const char *zPath){
     zDir[1] = 0;
   }else{
     zDir[i] = 0;
-  }
-  if( i>1 && zDir[i-1]==L':' ){
-    zDir[i] = L'\\';         /* drive-relative "C:" -> "C:\\" */
-    zDir[i+1] = 0;
   }
   hDir = osCreateFileW(zDir,
                        GENERIC_WRITE,

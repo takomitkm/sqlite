@@ -23,10 +23,13 @@
 # happens exactly once on the first xSync() of a new journal and not
 # again, that a failing directory open or a failing FlushFileBuffers() is
 # reported as SQLITE_IOERR_DIR_FSYNC and stays pending so that a later
-# xSync() can retry it, and that SQLITE_DISABLE_DIRSYNC turns both paths
-# off - are in the standalone program test/dirsyncprobe.c.  It counts the
-# CreateFileW and FlushFileBuffers calls through the win32 VFS
-# xSetSystemCall() interface.
+# xSync() can retry it, that SQLITE_DISABLE_DIRSYNC turns both paths
+# off, and that a relative name with no separator syncs the current
+# working directory - are in the standalone program test/dirsyncprobe.c.
+# It counts the CreateFileW and FlushFileBuffers calls through the win32
+# VFS xSetSystemCall() interface.  Note that "sqlite3 db test.db" does
+# not exercise a bare filename: xFullPathname() resolves it before the
+# VFS sees it, so only the standalone probe can reach that path.
 #
 # Deliberately not tested: durability across actual power failure.  That
 # is not observable in-process; it would require power-loss injection or
@@ -80,18 +83,6 @@ do_test win32dirsync-2.2 {
   db eval {INSERT INTO t2 VALUES('y')}
   db eval {PRAGMA wal_checkpoint(TRUNCATE)}
 } {0 -1 0}
-
-# ---- 3.x: relative path without a separator is skipped silently (FM3) ----
-# openDirectory()-equivalent behavior: a bare filename has no directory
-# component, so there is nothing to sync and no error.
-do_test win32dirsync-3.1 {
-  db close
-  forcedelete test.db test.db-journal
-  sqlite3 db test.db
-  db eval {PRAGMA journal_mode=DELETE}
-  db eval {PRAGMA synchronous=EXTRA}
-  db eval {CREATE TABLE t3(a); INSERT INTO t3 VALUES(1)}
-} {}
 
 # ---- 4.x: integrity + resource closing on every path above ----
 do_test win32dirsync-4.1 {
