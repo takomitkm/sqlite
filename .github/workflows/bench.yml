@@ -46,3 +46,30 @@ jobs:
             del /q bench.db bench.db-wal bench.db-shm 2>nul
             speedtest-patch.exe --journal WAL --size 25 bench.db | findstr /i TOTAL
           )
+      - name: build the directory-sync probe (patched / DISABLE_DIRSYNC / NO_SYNC)
+        shell: cmd
+        run: |
+          set VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -property installationPath`) do set VSPATH=%%i
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /O2 dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe.exe
+          cl /nologo /O2 /DSQLITE_DISABLE_DIRSYNC dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe-disabled.exe
+          cl /nologo /O2 /DSQLITE_NO_SYNC dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe-nosync.exe
+      - name: run the probe against the patched library (must pass)
+        shell: cmd
+        run: dirsyncprobe.exe
+      - name: run the probe with SQLITE_DISABLE_DIRSYNC (must pass, nothing is synced)
+        shell: cmd
+        run: dirsyncprobe-disabled.exe
+      - name: run the probe with SQLITE_NO_SYNC (must pass, nothing is synced)
+        shell: cmd
+        run: dirsyncprobe-nosync.exe
+      - name: the probe must fail against the unpatched library (red side)
+        shell: cmd
+        run: |
+          set VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -property installationPath`) do set VSPATH=%%i
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /O2 dirsyncprobe.c sqlite3-base.c /Fe:dirsyncprobe-base.exe
+          dirsyncprobe-base.exe
+          if errorlevel 1 (echo as expected: the probe fails against the unpatched library) else (echo ERROR: the probe passed against the unpatched library & exit /b 1)
