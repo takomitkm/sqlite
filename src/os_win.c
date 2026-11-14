@@ -178,6 +178,7 @@ struct winVfsAppData {
 #define WINFILE_RDONLY          0x02   /* Connection is read only */
 #define WINFILE_PERSIST_WAL     0x04   /* Persistent WAL mode */
 #define WINFILE_PSOW            0x10   /* SQLITE_IOCAP_POWERSAFE_OVERWRITE */
+#define WINFILE_DIRSYNC         0x20   /* Sync parent dir on first xSync */
 
 /*
  * The size of the buffer used by sqlite3_win32_write_debug().
@@ -2158,6 +2159,7 @@ int sqlite3_fullsync_count = 0;
 ** caller is entitled to know that the requested durability did not
 ** happen.
 */
+static LPWSTR winConvertFromUtf8Filename(const char *zFilename);
 static int winSyncDirectory(const char *zPath){
   LPWSTR zWidePath = winConvertFromUtf8Filename(zPath);
   LPWSTR zDir;
@@ -2276,6 +2278,10 @@ static int winSync(sqlite3_file *id, int flags){
   rc = osFlushFileBuffers(pFile->h);
   SimulateIOError( rc=FALSE );
   if( rc ){
+    if( pFile->ctrlFlags & WINFILE_DIRSYNC ){
+      int rcDir = winSyncDirectory(pFile->zPath);
+      if( rcDir!=SQLITE_OK ) return rcDir;
+    }
     OSTRACE(("SYNC pid=%lu, pFile=%p, file=%p, rc=SQLITE_OK\n",
              osGetCurrentProcessId(), pFile, pFile->h));
     return SQLITE_OK;
@@ -4410,9 +4416,7 @@ static int winOpen(
   char *zTmpname = 0; /* For temporary filename, if necessary. */
 
   int rc = SQLITE_OK;            /* Function Return Code */
-#if !defined(NDEBUG)
   int eType = flags&0x0FFF00;  /* Type of file to open */
-#endif
 
   int isExclusive  = (flags & SQLITE_OPEN_EXCLUSIVE);
   int isDelete     = (flags & SQLITE_OPEN_DELETEONCLOSE);
@@ -4420,13 +4424,11 @@ static int winOpen(
   int isReadonly   = (flags & SQLITE_OPEN_READONLY);
   int isReadWrite  = (flags & SQLITE_OPEN_READWRITE);
 
-#ifndef NDEBUG
   int isOpenJournal = (isCreate && (
         eType==SQLITE_OPEN_SUPER_JOURNAL
      || eType==SQLITE_OPEN_MAIN_JOURNAL
      || eType==SQLITE_OPEN_WAL
   ));
-#endif
 
   OSTRACE(("OPEN name=%s, pFile=%p, flags=%x, pOutFlags=%p\n",
            zUtf8Name, id, flags, pOutFlags));
@@ -4593,6 +4595,12 @@ static int winOpen(
    && sqlite3_uri_boolean(zName, "psow", SQLITE_POWERSAFE_OVERWRITE) 
   ){
     pFile->ctrlFlags |= WINFILE_PSOW;
+  }
+  if( isOpenJournal ){
+    /* One-time parent-directory sync on the first xSync, mirroring the
+    ** unix VFS treatment of newly created journals, WAL files and
+    ** super-journals. */
+    pFile->ctrlFlags |= WINFILE_DIRSYNC;
   }
   pFile->lastErrno = NO_ERROR;
   pFile->zPath = zName;
