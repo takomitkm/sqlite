@@ -328,31 +328,39 @@ int main(int argc, char **argv){
   ** needed in winSyncDirectory() because it only ever sees the full path. */
   {
     char zFull[600];
+    int isFull = 0;
+    zFull[0] = 0;
     rc = winVfs->xFullPathname(winVfs, "C:dirsync-probe-drive-rel-journal",
                                (int)sizeof(zFull), zFull);
     check( rc==SQLITE_OK,
            "S8.1 xFullPathname() resolves a drive-relative name" );
-    check( strchr(zFull, ':')!=0 && strchr(zFull, '\\')!=0,
-           "S8.2 the resolved name is a full path" );
-    resetCounters();
-    pFile = openJournal(zFull);
-    if( pFile ){
-      rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
-      check( rc==SQLITE_OK,
-             "S8.3 xSync() of the resolved journal name succeeds" );
-      check( nDirFlush==EXPECT_DIR_FLUSH,
-             "S8.4 the parent directory of the resolved name is synced" );
-      pFile->pMethods->xClose(pFile);
-      free(pFile);
-      pFile = 0;
+    if( rc==SQLITE_OK ){
+      isFull = strchr(zFull, ':')!=0 && strchr(zFull, '\\')!=0;
+      check( isFull, "S8.2 the resolved name is a full path" );
     }
-    resetCounters();
-    rc = winVfs->xDelete(winVfs, zFull, 1);
-    check( rc==SQLITE_OK,
-           "S8.5 xDelete() of the resolved name succeeds" );
-    check( nDirFlush==EXPECT_DIR_FLUSH,
-           "S8.6 the parent directory is synced on delete" );
-    winVfs->xDelete(winVfs, zFull, 0);
+    /* zFull is not a valid string unless xFullPathname() succeeded and
+    ** produced a full path.  Do not read or pass it on any other path. */
+    if( isFull ){
+      resetCounters();
+      pFile = openJournal(zFull);
+      if( pFile ){
+        rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
+        check( rc==SQLITE_OK,
+               "S8.3 xSync() of the resolved journal name succeeds" );
+        check( nDirFlush==EXPECT_DIR_FLUSH,
+               "S8.4 the parent directory of the resolved name is synced" );
+        pFile->pMethods->xClose(pFile);
+        free(pFile);
+        pFile = 0;
+      }
+      resetCounters();
+      rc = winVfs->xDelete(winVfs, zFull, 1);
+      check( rc==SQLITE_OK,
+             "S8.5 xDelete() of the resolved name succeeds" );
+      check( nDirFlush==EXPECT_DIR_FLUSH,
+             "S8.6 the parent directory is synced on delete" );
+      winVfs->xDelete(winVfs, zFull, 0);
+    }
   }
 
   /* Clean up. */
