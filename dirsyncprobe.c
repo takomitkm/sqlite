@@ -24,17 +24,30 @@
 **      working directory, matching the unix VFS.
 **   5) When SQLITE_DISABLE_DIRSYNC or SQLITE_NO_SYNC is compiled in,
 **      neither path syncs anything.
+**   6) A Windows drive-relative name ("C:foo") reaches the same no-separator
+**      branch and resolves to the process working directory; the VFS itself
+**      never produces such a name because both callers pass an xFullPathname()
+**      result.
 **
 ** The calls are counted by replacing CreateFileW and FlushFileBuffers
 ** through the win32 VFS xSetSystemCall() interface.  A directory handle is
 ** one that was opened with FILE_FLAG_BACKUP_SEMANTICS.
 **
-** Build against the amalgamation:
+** Build against the amalgamation.  sqlite3.c is a generated file and is
+** not checked into this branch; from a SQLite source tree generate it
+** first (requires Tcl):
+**
+**   tclsh tool/mksqlite3c.tcl            # after target_source creates tsrc
+**   (or: make sqlite3.c)
+**
+** then, from the directory holding sqlite3.c and sqlite3.h:
 **
 **   cl /nologo /O2 dirsyncprobe.c sqlite3.c /Fe:dirsyncprobe.exe
 **
-** The program prints one line per check and exits with a non-zero status
-** if any check fails.
+** The fork's CI uses a pre-generated amalgamation (sqlite3-patch.c plus
+** sqlite3-base.c on the bench branch) instead, so the same compile line
+** there reads "sqlite3-patch.c".  The program prints one line per check
+** and exits with a non-zero status if any check fails.
 */
 #include "sqlite3.h"
 #include <windows.h>
@@ -305,6 +318,31 @@ int main(int argc, char **argv){
   check( rc==SQLITE_OK, "S7.3 xDelete() of a relative name succeeds" );
   check( nDirFlush==EXPECT_DIR_FLUSH,
          "S7.4 the current working directory is synced on delete" );
+
+  /* S8: a Windows drive-relative name (C:foo) has no separator either.
+  ** The VFS never produces one - both callers pass an xFullPathname()
+  ** result - but this probe calls the VFS directly.  The win32 code
+  ** resolves it to the process working directory through L".", so the
+  ** checks below pin that documented behavior. */
+  resetCounters();
+  pFile = openJournal("C:dirsync-probe-drive-rel-journal");
+  if( pFile ){
+    rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
+    check( rc==SQLITE_OK,
+           "S8.1 xSync() of a drive-relative journal name succeeds" );
+    check( nDirFlush==EXPECT_DIR_FLUSH,
+           "S8.2 the process working directory is synced" );
+    pFile->pMethods->xClose(pFile);
+    free(pFile);
+    pFile = 0;
+  }
+  resetCounters();
+  rc = winVfs->xDelete(winVfs, "C:dirsync-probe-drive-rel-journal", 1);
+  check( rc==SQLITE_OK,
+         "S8.3 xDelete() of a drive-relative name succeeds" );
+  check( nDirFlush==EXPECT_DIR_FLUSH,
+         "S8.4 the process working directory is synced on delete" );
+  winVfs->xDelete(winVfs, "C:dirsync-probe-drive-rel-journal", 0);
 
   /* Clean up. */
   winVfs->xDelete(winVfs, zAbs1, 0);
