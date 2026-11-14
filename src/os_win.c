@@ -2184,33 +2184,12 @@ static int winSyncDirectory(const char *zPath){
     /* No separator in the path: the containing directory is the current
     ** working directory.  The unix VFS does the same thing - openDirectory()
     ** uses "." when the path has no '/' - and syncs it, so do the same here.
-    ** The absolute path of the working directory is used so that the open
-    ** below cannot be affected by relative-path resolution rules. */
-    DWORD cch = GetCurrentDirectoryW(0, 0);
-    LPWSTR zCwd;
-    if( cch==0 ){
-      sqlite3_free(zDir);
-      return SQLITE_OK;
-    }
-    zCwd = sqlite3_malloc64(((sqlite3_int64)cch+2)*sizeof(WCHAR));
-    if( zCwd==0 ){
-      sqlite3_free(zDir);
-      return SQLITE_NOMEM;
-    }
-    if( GetCurrentDirectoryW(cch, zCwd)==0 ){
-      sqlite3_free(zCwd);
-      sqlite3_free(zDir);
-      return SQLITE_OK;
-    }
-    sqlite3_free(zDir);
-    zDir = zCwd;
-    i = wcslen(zDir);
-    while( i>0 && (zDir[i-1]==L'/' || zDir[i-1]==L'\\') ) i--;
-    zDir[i] = 0;
-    if( i==0 ){
-      sqlite3_free(zDir);
-      return SQLITE_OK;
-    }
+    ** A single relative "." is used rather than an absolute path: the open
+    ** below is resolved atomically at that call, so there is no
+    ** get-length-then-get-path race and no failure that would have to be
+    ** silently turned into success. */
+    zDir[0] = L'.';
+    zDir[1] = 0;
   }else{
     zDir[i] = 0;
   }

@@ -18,7 +18,8 @@
 **      true, and does not when it is false.
 **   3) A failing directory open or a failing FlushFileBuffers() is
 **      reported as SQLITE_IOERR_DIR_FSYNC, and the failed sync stays
-**      pending so that a later xSync() can retry it.
+**      pending so that a later xSync() can retry it (both failure
+**      modes are followed by a retry check).
 **   4) A relative path with no directory separator syncs the current
 **      working directory, matching the unix VFS.
 **   5) When SQLITE_DISABLE_DIRSYNC or SQLITE_NO_SYNC is compiled in,
@@ -270,6 +271,14 @@ int main(int argc, char **argv){
     if( EXPECT_DIR_FLUSH ){
       check( rc==SQLITE_IOERR_DIR_FSYNC,
              "S6.1 a failing FlushFileBuffers() is reported as SQLITE_IOERR_DIR_FSYNC" );
+      /* The failed flush must leave WINFILE_DIRSYNC set, so the next
+      ** xSync() retries it rather than reporting success without the
+      ** directory having been synced. */
+      rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
+      check( rc==SQLITE_OK,
+             "S6.2 the failed directory flush is retried by the next xSync()" );
+      check( nDirFlush==2,
+             "S6.3 the retry performs exactly one more directory flush" );
     }else{
       check( rc==SQLITE_OK,
              "S6.1 no directory sync is attempted with the option compiled out (flag defined as 0)" );
