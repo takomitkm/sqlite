@@ -39,6 +39,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 /*
 ** With SQLITE_DISABLE_DIRSYNC or SQLITE_NO_SYNC compiled in, neither the
@@ -127,20 +128,39 @@ static void check(int cond, const char *zMsg){
 }
 
 static void absName(const char *zRel, char *zOut, int nOut){
-  DWORD n = GetFullPathNameA(zRel, (DWORD)nOut, zOut, 0);
-  if( n==0 || n>=(DWORD)nOut ){
+  DWORD n = GetCurrentDirectoryA((DWORD)nOut, zOut);
+  if( n==0 || n>=(DWORD)nOut-2 ){
     memset(zOut, 0, (size_t)nOut);
+    return;
   }
+  if( zOut[n-1]!='\\' ){
+    zOut[n++] = '\\';
+    zOut[n] = 0;
+  }
+  strncat(zOut, zRel, (size_t)(nOut-n-1));
 }
 
 static sqlite3_file *openJournal(const char *zName){
-  sqlite3_file *pFile = 0;
-  int rc = winVfs->xOpen(winVfs, zName, &pFile,
+  sqlite3_file *pFile;
+  int rc;
+  /* xOpen() expects a pointer to a caller-allocated sqlite3_file structure
+  ** that is at least szOsFile bytes long.  Passing &pFile here (a
+  ** sqlite3_file**) would make winOpen() overwrite the pointer variable
+  ** with the whole winFile structure. */
+  pFile = (sqlite3_file*)calloc(1, (size_t)winVfs->szOsFile);
+  if( pFile==0 ){
+    printf("FAIL out of memory\n");
+    fflush(stdout);
+    nFail++;
+    return 0;
+  }
+  rc = winVfs->xOpen(winVfs, zName, pFile,
       SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|SQLITE_OPEN_MAIN_JOURNAL, 0);
   if( rc!=SQLITE_OK ){
     printf("FAIL cannot open %s: %s\n", zName, sqlite3_errstr(rc));
     fflush(stdout);
     nFail++;
+    free(pFile);
     return 0;
   }
   return pFile;
@@ -196,6 +216,8 @@ int main(int argc, char **argv){
     check( nDirFlush==EXPECT_DIR_FLUSH,
            "S2.2 the parent directory is not synced again" );
     pFile->pMethods->xClose(pFile);
+    free(pFile);
+    pFile = 0;
   }
 
   /* S3: xDelete() with syncDir=1 syncs the parent directory. */
@@ -207,7 +229,10 @@ int main(int argc, char **argv){
 
   /* S4: xDelete() with syncDir=0 never syncs a directory. */
   pFile = openJournal(zAbs2);
-  if( pFile ) pFile->pMethods->xClose(pFile);
+  if( pFile ){
+    pFile->pMethods->xClose(pFile);
+    free(pFile);
+  }
   resetCounters();
   rc = winVfs->xDelete(winVfs, zAbs2, 0);
   check( rc==SQLITE_OK, "S4.1 xDelete() with syncDir=0 succeeds" );
@@ -232,6 +257,8 @@ int main(int argc, char **argv){
              "S5.1 no directory sync is attempted with the option compiled out" );
     }
     pFile->pMethods->xClose(pFile);
+    free(pFile);
+    pFile = 0;
   }
 
   /* S6: a failing FlushFileBuffers() is reported as SQLITE_IOERR_DIR_FSYNC. */
@@ -248,6 +275,8 @@ int main(int argc, char **argv){
              "S6.1 no directory sync is attempted with the option compiled out" );
     }
     pFile->pMethods->xClose(pFile);
+    free(pFile);
+    pFile = 0;
   }
 
   /* S7: a relative name with no separator syncs the working directory. */
@@ -259,6 +288,8 @@ int main(int argc, char **argv){
     check( nDirFlush==EXPECT_DIR_FLUSH,
            "S7.2 the current working directory is synced" );
     pFile->pMethods->xClose(pFile);
+    free(pFile);
+    pFile = 0;
   }
   resetCounters();
   rc = winVfs->xDelete(winVfs, "dirsync-probe-rel-journal", 1);
