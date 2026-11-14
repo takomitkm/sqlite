@@ -24,10 +24,10 @@
 **      working directory, matching the unix VFS.
 **   5) When SQLITE_DISABLE_DIRSYNC or SQLITE_NO_SYNC is compiled in,
 **      neither path syncs anything.
-**   6) A Windows drive-relative name ("C:foo") reaches the same no-separator
-**      branch and resolves to the process working directory; the VFS itself
-**      never produces such a name because both callers pass an xFullPathname()
-**      result.
+**   6) A Windows drive-relative name ("C:foo") is first normalized by
+**      xFullPathname(), as SQLite requires, and the resulting full path is
+**      then passed to xOpen()/xDelete().  winSyncDirectory() only ever sees
+**      that full path, so it needs no drive-relative special case.
 **
 ** The calls are counted by replacing CreateFileW and FlushFileBuffers
 ** through the win32 VFS xSetSystemCall() interface.  A directory handle is
@@ -319,30 +319,41 @@ int main(int argc, char **argv){
   check( nDirFlush==EXPECT_DIR_FLUSH,
          "S7.4 the current working directory is synced on delete" );
 
-  /* S8: a Windows drive-relative name (C:foo) has no separator either.
-  ** The VFS never produces one - both callers pass an xFullPathname()
-  ** result - but this probe calls the VFS directly.  The win32 code
-  ** resolves it to the process working directory through L".", so the
-  ** checks below pin that documented behavior. */
-  resetCounters();
-  pFile = openJournal("C:dirsync-probe-drive-rel-journal");
-  if( pFile ){
-    rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
+  /* S8: a Windows drive-relative name ("C:foo") is not a valid xOpen()
+  ** input - SQLite requires xFullPathname() to have been applied first,
+  ** and a drive-relative path's parent is that drive's current directory,
+  ** not necessarily the process working directory.  Normalize it through
+  ** the VFS before calling xOpen()/xDelete(), so this exercises the
+  ** sequence SQLite actually uses.  No drive-relative special case is
+  ** needed in winSyncDirectory() because it only ever sees the full path. */
+  {
+    char zFull[600];
+    rc = winVfs->xFullPathname(winVfs, "C:dirsync-probe-drive-rel-journal",
+                               (int)sizeof(zFull), zFull);
     check( rc==SQLITE_OK,
-           "S8.1 xSync() of a drive-relative journal name succeeds" );
+           "S8.1 xFullPathname() resolves a drive-relative name" );
+    check( strchr(zFull, ':')!=0 && strchr(zFull, '\\')!=0,
+           "S8.2 the resolved name is a full path" );
+    resetCounters();
+    pFile = openJournal(zFull);
+    if( pFile ){
+      rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
+      check( rc==SQLITE_OK,
+             "S8.3 xSync() of the resolved journal name succeeds" );
+      check( nDirFlush==EXPECT_DIR_FLUSH,
+             "S8.4 the parent directory of the resolved name is synced" );
+      pFile->pMethods->xClose(pFile);
+      free(pFile);
+      pFile = 0;
+    }
+    resetCounters();
+    rc = winVfs->xDelete(winVfs, zFull, 1);
+    check( rc==SQLITE_OK,
+           "S8.5 xDelete() of the resolved name succeeds" );
     check( nDirFlush==EXPECT_DIR_FLUSH,
-           "S8.2 the process working directory is synced" );
-    pFile->pMethods->xClose(pFile);
-    free(pFile);
-    pFile = 0;
+           "S8.6 the parent directory is synced on delete" );
+    winVfs->xDelete(winVfs, zFull, 0);
   }
-  resetCounters();
-  rc = winVfs->xDelete(winVfs, "C:dirsync-probe-drive-rel-journal", 1);
-  check( rc==SQLITE_OK,
-         "S8.3 xDelete() of a drive-relative name succeeds" );
-  check( nDirFlush==EXPECT_DIR_FLUSH,
-         "S8.4 the process working directory is synced on delete" );
-  winVfs->xDelete(winVfs, "C:dirsync-probe-drive-rel-journal", 0);
 
   /* Clean up. */
   winVfs->xDelete(winVfs, zAbs1, 0);
