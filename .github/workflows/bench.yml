@@ -72,4 +72,4 @@ jobs:
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
           cl /nologo /O2 dirsyncprobe.c sqlite3-base.c /Fe:dirsyncprobe-base.exe
           dirsyncprobe-base.exe
-          if errorlevel 1 (echo as expected: the probe fails against the unpatched library) else (echo ERROR: the probe passed against the unpatched library & exit /b 1)
+          if errorlevel 1 (echo as expected: the probe fails against the unpatched library & exit /b 0) else (echo ERROR: the probe passed against the unpatched library & exit /b 1)
