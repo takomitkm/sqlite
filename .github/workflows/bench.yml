@@ -1,0 +1,48 @@
+name: dirsync-bench
+on:
+  push:
+    branches: [bench]
+  workflow_dispatch:
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bench
+      - name: build
+        shell: cmd
+        run: |
+          set VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -property installationPath`) do set VSPATH=%%i
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 speedtest1.c sqlite3-base.c /Fe:speedtest-base.exe
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 speedtest1.c sqlite3-patch.c /Fe:speedtest-patch.exe
+      - name: bench DELETE (5 interleaved rounds)
+        shell: cmd
+        run: |
+          for /L %%r in (1,1,5) do (
+            del /q bench.db 2>nul
+            speedtest-base.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
+            del /q bench.db 2>nul
+            speedtest-patch.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
+          )
+      - name: bench DELETE + synchronous=EXTRA emulation via --journal WAL is not applicable; nosync control (3 rounds)
+        shell: cmd
+        run: |
+          for /L %%r in (1,1,3) do (
+            del /q bench.db 2>nul
+            speedtest-base.exe --nosync --journal DELETE --size 25 bench.db | findstr /i TOTAL
+            del /q bench.db 2>nul
+            speedtest-patch.exe --nosync --journal DELETE --size 25 bench.db | findstr /i TOTAL
+          )
+      - name: bench WAL (3 interleaved rounds)
+        shell: cmd
+        run: |
+          for /L %%r in (1,1,3) do (
+            del /q bench.db bench.db-wal bench.db-shm 2>nul
+            speedtest-base.exe --journal WAL --size 25 bench.db | findstr /i TOTAL
+            del /q bench.db bench.db-wal bench.db-shm 2>nul
+            speedtest-patch.exe --journal WAL --size 25 bench.db | findstr /i TOTAL
+          )
