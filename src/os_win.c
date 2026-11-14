@@ -178,7 +178,11 @@ struct winVfsAppData {
 #define WINFILE_RDONLY          0x02   /* Connection is read only */
 #define WINFILE_PERSIST_WAL     0x04   /* Persistent WAL mode */
 #define WINFILE_PSOW            0x10   /* SQLITE_IOCAP_POWERSAFE_OVERWRITE */
-#define WINFILE_DIRSYNC         0x20   /* Sync parent dir on first xSync */
+#if !defined(SQLITE_DISABLE_DIRSYNC)
+# define WINFILE_DIRSYNC        0x20   /* Sync parent dir on first xSync */
+#else
+# define WINFILE_DIRSYNC        0x00   /* Directory syncs disabled */
+#endif
 
 /*
  * The size of the buffer used by sqlite3_win32_write_debug().
@@ -2177,13 +2181,39 @@ static int winSyncDirectory(const char *zPath){
   sqlite3_free(zWidePath);
   for(i=n; i>0 && zDir[i-1]!=L'/' && zDir[i-1]!=L'\\'; i--){}
   if( i==0 ){
-    /* No separator: nothing to sync.  The unix VFS behaves the same way
-    ** (openDirectory() only opens a directory for paths that contain a
-    ** '/'). */
+    /* No separator in the path: the containing directory is the current
+    ** working directory.  The unix VFS does the same thing - openDirectory()
+    ** uses "." when the path has no '/' - and syncs it, so do the same here.
+    ** The absolute path of the working directory is used so that the open
+    ** below cannot be affected by relative-path resolution rules. */
+    DWORD cch = GetCurrentDirectoryW(0, 0);
+    LPWSTR zCwd;
+    if( cch==0 ){
+      sqlite3_free(zDir);
+      return SQLITE_OK;
+    }
+    zCwd = sqlite3_malloc64(((sqlite3_int64)cch+2)*sizeof(WCHAR));
+    if( zCwd==0 ){
+      sqlite3_free(zDir);
+      return SQLITE_NOMEM;
+    }
+    if( GetCurrentDirectoryW(cch, zCwd)==0 ){
+      sqlite3_free(zCwd);
+      sqlite3_free(zDir);
+      return SQLITE_OK;
+    }
     sqlite3_free(zDir);
-    return SQLITE_OK;
+    zDir = zCwd;
+    i = wcslen(zDir);
+    while( i>0 && (zDir[i-1]==L'/' || zDir[i-1]==L'\\') ) i--;
+    zDir[i] = 0;
+    if( i==0 ){
+      sqlite3_free(zDir);
+      return SQLITE_OK;
+    }
+  }else{
+    zDir[i] = 0;
   }
-  zDir[i] = 0;
   if( i>1 && zDir[i-1]==L':' ){
     zDir[i] = L'\\';         /* drive-relative "C:" -> "C:\\" */
     zDir[i+1] = 0;
@@ -2281,6 +2311,11 @@ static int winSync(sqlite3_file *id, int flags){
     if( pFile->ctrlFlags & WINFILE_DIRSYNC ){
       int rcDir = winSyncDirectory(pFile->zPath);
       if( rcDir!=SQLITE_OK ) return rcDir;
+      /* The parent directory has been synced.  Clear the flag so that the
+      ** directory is not synced again on every later xSync() of this file.
+      ** The unix VFS clears UNIXFILE_DIRSYNC in the same place.  The flag
+      ** is kept when the sync fails so that a later xSync() can retry. */
+      pFile->ctrlFlags &= ~WINFILE_DIRSYNC;
     }
     OSTRACE(("SYNC pid=%lu, pFile=%p, file=%p, rc=SQLITE_OK\n",
              osGetCurrentProcessId(), pFile, pFile->h));
@@ -4596,12 +4631,14 @@ static int winOpen(
   ){
     pFile->ctrlFlags |= WINFILE_PSOW;
   }
+#ifndef SQLITE_DISABLE_DIRSYNC
   if( isOpenJournal ){
     /* One-time parent-directory sync on the first xSync, mirroring the
     ** unix VFS treatment of newly created journals, WAL files and
     ** super-journals. */
     pFile->ctrlFlags |= WINFILE_DIRSYNC;
   }
+#endif
   pFile->lastErrno = NO_ERROR;
   pFile->zPath = zName;
 #if SQLITE_MAX_MMAP_SIZE>0
@@ -4630,7 +4667,7 @@ static int winOpen(
 static int winDelete(
   sqlite3_vfs *pVfs,          /* Not used on win32 */
   const char *zFilename,      /* Name of file to delete */
-  int syncDir                 /* Not used on win32 */
+  int syncDir                 /* If true, sync the parent directory too */
 ){
   int cnt = 0;
   int rc;
@@ -4638,7 +4675,11 @@ static int winDelete(
   DWORD lastErrno = 0;
   LPWSTR zConverted;
   UNUSED_PARAMETER(pVfs);
+#if !defined(SQLITE_DISABLE_DIRSYNC) && !defined(SQLITE_NO_SYNC)
+  /* The syncDir argument is used below, to sync the parent directory. */
+#else
   UNUSED_PARAMETER(syncDir);
+#endif
 
   SimulateIOError(return SQLITE_IOERR_DELETE);
   OSTRACE(("DELETE name=%s, syncDir=%d\n", zFilename, syncDir));
@@ -4678,12 +4719,16 @@ static int winDelete(
   }else{
     winLogIoerr(cnt, __LINE__);
   }
+#if !defined(SQLITE_DISABLE_DIRSYNC) && !defined(SQLITE_NO_SYNC)
   if( rc==SQLITE_OK && (syncDir & 1)!=0 ){
     /* Sync the directory so the deletion is durable, mirroring the unix
     ** VFS.  Reached only when the pager runs with synchronous=EXTRA (or
-    ** on a batch-atomic filesystem). */
+    ** on a batch-atomic filesystem).  Under SQLITE_NO_SYNC the unix VFS
+    ** performs no actual fsync() either (full_fsync() is a no-op there),
+    ** so the same applies here. */
     rc = winSyncDirectory(zFilename);
   }
+#endif
   sqlite3_free(zConverted);
   OSTRACE(("DELETE name=%s, rc=%s\n", zFilename, sqlite3ErrName(rc)));
   return rc;
