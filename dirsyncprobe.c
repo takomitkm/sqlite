@@ -254,7 +254,7 @@ int main(int argc, char **argv){
              "S5.3 the retry syncs the parent directory exactly once" );
     }else{
       check( rc==SQLITE_OK,
-             "S5.1 no directory sync is attempted with the option compiled out" );
+             "S5.1 no directory sync is attempted with the option compiled out (flag defined as 0)" );
     }
     pFile->pMethods->xClose(pFile);
     free(pFile);
@@ -272,7 +272,7 @@ int main(int argc, char **argv){
              "S6.1 a failing FlushFileBuffers() is reported as SQLITE_IOERR_DIR_FSYNC" );
     }else{
       check( rc==SQLITE_OK,
-             "S6.1 no directory sync is attempted with the option compiled out" );
+             "S6.1 no directory sync is attempted with the option compiled out (flag defined as 0)" );
     }
     pFile->pMethods->xClose(pFile);
     free(pFile);
