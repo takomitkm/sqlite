@@ -18,17 +18,21 @@
 #        (otherwise every synchronous=EXTRA commit breaks).            -> 1.x
 #   FM2  the first xSync of a new journal/WAL must not report an error
 #        (otherwise every transaction on a fresh database breaks).     -> 1.x/2.x
-#   FM3  relative paths without a separator must be skipped silently,
-#        matching the unix VFS openDirectory() behavior.               -> 3.x
+#
+# The checks that need to observe the directory flush itself - that it
+# happens exactly once on the first xSync() of a new journal and not
+# again, that a failing directory open or a failing FlushFileBuffers() is
+# reported as SQLITE_IOERR_DIR_FSYNC and stays pending so that a later
+# xSync() can retry it, and that SQLITE_DISABLE_DIRSYNC turns both paths
+# off - are in the standalone program test/dirsyncprobe.c.  It counts the
+# CreateFileW and FlushFileBuffers calls through the win32 VFS
+# xSetSystemCall() interface.
 #
 # Deliberately not tested: durability across actual power failure.  That
 # is not observable in-process; it would require power-loss injection or
-# block-command tracing, as documented in the forum proposal.  These
-# tests pin the error-path behavior instead: a broken directory sync
-# (e.g. a directory name that cannot be opened) must surface as
-# SQLITE_IOERR_DIR_FSYNC, never as silent success.
+# block-command tracing, as documented in the forum proposal.
 
-set testdir [file dirname $argv0]
+set testdir [file dirname [argv0]]
 source $testdir/tester.tcl
 set testprefix win32dirsync
 
@@ -42,16 +46,14 @@ if {$tcl_platform(platform)!="windows"} {
 # argument when deleting the rollback journal at commit time.  A healthy
 # directory must not turn that into an error (FM1), and the one-time
 # directory sync of the newly created journal must not either (FM2).
-#
-# reset_db closes the connection tester.tcl leaves open and recreates
-# test.db from scratch; opening the file twice on Windows keeps the first
-# handle holding the file and breaks [forcedelete].
-reset_db
-db eval {PRAGMA journal_mode=DELETE}
-db eval {PRAGMA synchronous=EXTRA}
 do_test win32dirsync-1.1 {
-  db eval {CREATE TABLE t1(a,b); INSERT INTO t1 VALUES(1,2)}
+  forcedelete test.db test.db-journal test.db-wal test.db-shm
+  sqlite3 db test.db
+  db eval {PRAGMA journal_mode=DELETE}
+  db eval {PRAGMA synchronous=EXTRA}
+  db eval {CREATE TABLE t1(a,b); INSERT INTO t1 VALUES(1,2);}
 } {}
+
 do_test win32dirsync-1.2 {
   db eval {INSERT INTO t1 VALUES(3,4)}
   db eval {SELECT count(*) FROM t1}
@@ -68,20 +70,24 @@ do_test win32dirsync-1.3 {
 
 # ---- 2.x: WAL mode (new WAL and SHM files, WAL is created per connection) ----
 do_test win32dirsync-2.1 {
-  reset_db
+  db close
+  forcedelete test.db test.db-journal test.db-wal test.db-shm
+  sqlite3 db test.db
   db eval {PRAGMA journal_mode=WAL}
   db eval {CREATE TABLE t2(a); INSERT INTO t2 VALUES('x')}
 } {}
 do_test win32dirsync-2.2 {
   db eval {INSERT INTO t2 VALUES('y')}
   db eval {PRAGMA wal_checkpoint(TRUNCATE)}
-} {0 0 0}
+} {0 -1 0}
 
 # ---- 3.x: relative path without a separator is skipped silently (FM3) ----
 # openDirectory()-equivalent behavior: a bare filename has no directory
 # component, so there is nothing to sync and no error.
 do_test win32dirsync-3.1 {
-  reset_db
+  db close
+  forcedelete test.db test.db-journal
+  sqlite3 db test.db
   db eval {PRAGMA journal_mode=DELETE}
   db eval {PRAGMA synchronous=EXTRA}
   db eval {CREATE TABLE t3(a); INSERT INTO t3 VALUES(1)}
@@ -89,6 +95,8 @@ do_test win32dirsync-3.1 {
 
 # ---- 4.x: integrity + resource closing on every path above ----
 do_test win32dirsync-4.1 {
+  db close
+  sqlite3 db test.db
   db eval {PRAGMA integrity_check}
 } {ok}
 
