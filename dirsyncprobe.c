@@ -20,8 +20,11 @@
 **      reported as SQLITE_IOERR_DIR_FSYNC, and the failed sync stays
 **      pending so that a later xSync() can retry it (both failure
 **      modes are followed by a retry check).
-**   4) A relative path with no directory separator syncs the current
-**      working directory, matching the unix VFS.
+**   4) A direct-call robustness test of the no-separator fallback: a bare
+**      relative name that reaches winSyncDirectory() resolves to the current
+**      working directory.  SQLite core never supplies such a name to
+**      xOpen() - xFullPathname() normalizes input first, and the S8 checks
+**      cover that supported call sequence.
 **   5) When SQLITE_DISABLE_DIRSYNC or SQLITE_NO_SYNC is compiled in,
 **      neither path syncs anything.
 **   6) A Windows drive-relative name ("C:foo") is first normalized by
@@ -301,7 +304,12 @@ int main(int argc, char **argv){
     pFile = 0;
   }
 
-  /* S7: a relative name with no separator syncs the working directory. */
+  /* S7: a direct-call robustness test for the no-separator fallback in
+  ** winSyncDirectory().  This is not a pathname that SQLite core supplies
+  ** to xOpen(): the normal input is normalized by xFullPathname(), and the
+  ** S8 checks cover that supported call sequence.  The assertions below
+  ** only pin what the defensive L"." branch does when a bare relative name
+  ** reaches it anyway. */
   resetCounters();
   pFile = openJournal("dirsync-probe-rel-journal");
   if( pFile ){
