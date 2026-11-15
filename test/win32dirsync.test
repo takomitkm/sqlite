@@ -35,7 +35,7 @@
 # is not observable in-process; it would require power-loss injection or
 # block-command tracing, as documented in the forum proposal.
 
-set testdir [file dirname [argv0]]
+set testdir [file dirname $argv0]
 source $testdir/tester.tcl
 set testprefix win32dirsync
 
