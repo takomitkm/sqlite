@@ -6,11 +6,19 @@ on:
 jobs:
   bench:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: bench
+
+      - name: generate bench variants (fail closed on anchor mismatch)
+        shell: python
+        run: |
+          python e24_root_patch.py --variant base --input sqlite3-base.c --output sqlite3-base-count.c
+          python e24_root_patch.py --variant dir --input sqlite3-patch.c --output sqlite3-dir.c
+          python e24_root_patch.py --variant dirroot --input sqlite3-patch.c --output sqlite3-dirroot.c
+
       - name: build
         shell: cmd
         run: |
@@ -18,52 +26,90 @@ jobs:
           for /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -property installationPath`) do set VSPATH=%%i
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
           cl /nologo /O2 /DSQLITE_THREADSAFE=0 speedtest1.c sqlite3-base.c /Fe:speedtest-base.exe
-          cl /nologo /O2 /DSQLITE_THREADSAFE=0 speedtest1.c sqlite3-patch.c /Fe:speedtest-patch.exe
-      - name: bench DELETE (5 interleaved rounds)
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 speedtest1.c sqlite3-dir.c /Fe:speedtest-dir.exe
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 speedtest1.c sqlite3-dirroot.c /Fe:speedtest-dirroot.exe
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 e24_bench.c sqlite3-base-count.c /Fe:e24-base.exe
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 e24_bench.c sqlite3-dir.c /Fe:e24-dir.exe
+          cl /nologo /O2 /DSQLITE_THREADSAFE=0 e24_bench.c sqlite3-dirroot.c /Fe:e24-dirroot.exe
+
+      - name: e24 commit-shaped bench, synchronous=FULL (3 interleaved rounds, 500 txns)
         shell: cmd
         run: |
-          for /L %%r in (1,1,5) do (
-            del /q bench.db 2>nul
-            speedtest-base.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
-            del /q bench.db 2>nul
-            speedtest-patch.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
+          mkdir D:\e24 2>nul
+          for /L %%r in (1,1,3) do (
+            e24-base.exe D:\e24\b_base.db 500 50 FULL 0
+            e24-dir.exe D:\e24\b_dir.db 500 50 FULL 500
+            e24-dirroot.exe D:\e24\b_dirroot.db 500 50 FULL 500
           )
-      - name: bench DELETE + synchronous=EXTRA emulation via --journal WAL is not applicable; nosync control (3 rounds)
+
+      - name: e24 commit-shaped bench, synchronous=EXTRA (2 rounds, 500 txns)
+        shell: cmd
+        run: |
+          for /L %%r in (1,1,2) do (
+            e24-base.exe D:\e24\e_base.db 500 50 EXTRA 0
+            e24-dir.exe D:\e24\e_dir.db 500 50 EXTRA 1000
+            e24-dirroot.exe D:\e24\e_dirroot.db 500 50 EXTRA 1000
+          )
+
+      - name: bench DELETE (3 interleaved rounds)
         shell: cmd
         run: |
           for /L %%r in (1,1,3) do (
             del /q bench.db 2>nul
+            speedtest-base.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
+            del /q bench.db 2>nul
+            speedtest-dir.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
+            del /q bench.db 2>nul
+            speedtest-dirroot.exe --journal DELETE --size 25 bench.db | findstr /i TOTAL
+          )
+
+      - name: bench nosync control (2 rounds)
+        shell: cmd
+        run: |
+          for /L %%r in (1,1,2) do (
+            del /q bench.db 2>nul
             speedtest-base.exe --nosync --journal DELETE --size 25 bench.db | findstr /i TOTAL
             del /q bench.db 2>nul
-            speedtest-patch.exe --nosync --journal DELETE --size 25 bench.db | findstr /i TOTAL
+            speedtest-dirroot.exe --nosync --journal DELETE --size 25 bench.db | findstr /i TOTAL
           )
-      - name: bench WAL (3 interleaved rounds)
+
+      - name: bench WAL (3 interleaved rounds; dir hook must not tax WAL mode)
         shell: cmd
         run: |
           for /L %%r in (1,1,3) do (
             del /q bench.db bench.db-wal bench.db-shm 2>nul
             speedtest-base.exe --journal WAL --size 25 bench.db | findstr /i TOTAL
             del /q bench.db bench.db-wal bench.db-shm 2>nul
-            speedtest-patch.exe --journal WAL --size 25 bench.db | findstr /i TOTAL
+            speedtest-dirroot.exe --journal WAL --size 25 bench.db | findstr /i TOTAL
           )
-      - name: build the directory-sync probe (patched / DISABLE_DIRSYNC / NO_SYNC)
+
+      - name: build the directory-sync probe (patched / dir+root / DISABLE_DIRSYNC / NO_SYNC)
         shell: cmd
         run: |
           set VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
           for /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -property installationPath`) do set VSPATH=%%i
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
           cl /nologo /O2 dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe.exe
+          cl /nologo /O2 dirsyncprobe.c sqlite3-dirroot.c /Fe:dirsyncprobe-dirroot.exe
           cl /nologo /O2 /DSQLITE_DISABLE_DIRSYNC dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe-disabled.exe
           cl /nologo /O2 /DSQLITE_NO_SYNC dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe-nosync.exe
+
       - name: run the probe against the patched library (must pass)
         shell: cmd
         run: dirsyncprobe.exe
+
+      - name: run the probe against the dir+root library (must pass)
+        shell: cmd
+        run: dirsyncprobe-dirroot.exe
+
       - name: run the probe with SQLITE_DISABLE_DIRSYNC (must pass, nothing is synced)
         shell: cmd
         run: dirsyncprobe-disabled.exe
+
       - name: run the probe with SQLITE_NO_SYNC (must pass, nothing is synced)
         shell: cmd
         run: dirsyncprobe-nosync.exe
+
       - name: the probe must fail against the unpatched library (red side)
         shell: cmd
         run: |
