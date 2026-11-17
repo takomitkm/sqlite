@@ -359,13 +359,21 @@ int main(int argc, char **argv){
     /* zFull is not a valid string unless xFullPathname() succeeded and
     ** produced a full path.  Do not read or pass it on any other path. */
     if( isFull ){
+      /* The resolved drive-relative name may sit directly in the volume
+      ** root (the per-drive cwd starts at the root), in which case the
+      ** parent flush IS the root flush and no second one is made. */
+      int expectS8 = EXPECT_DIR_FLUSHES;
+      {
+        const char *sep = strrchr(zFull, '\\');
+        if( sep!=0 && sep==zFull+2 ) expectS8 = EXPECT_DIR_FLUSH;
+      }
       resetCounters();
       pFile = openJournal(zFull);
       if( pFile ){
         rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
         check( rc==SQLITE_OK,
                "S8.3 xSync() of the resolved journal name succeeds" );
-        check( nDirFlush==EXPECT_DIR_FLUSHES,
+        check( nDirFlush==expectS8,
                "S8.4 the parent directory of the resolved name is synced" );
         pFile->pMethods->xClose(pFile);
         free(pFile);
@@ -375,7 +383,7 @@ int main(int argc, char **argv){
       rc = winVfs->xDelete(winVfs, zFull, 1);
       check( rc==SQLITE_OK,
              "S8.5 xDelete() of the resolved name succeeds" );
-      check( nDirFlush==EXPECT_DIR_FLUSHES,
+      check( nDirFlush==expectS8,
              "S8.6 the parent directory is synced on delete" );
       winVfs->xDelete(winVfs, zFull, 0);
     }
