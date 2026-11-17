@@ -74,7 +74,7 @@ int main(int argc, char **argv){
     QueryPerformanceCounter(&st);
     for(i=0; i<nTxn; i++){
       xexec(db, "BEGIN IMMEDIATE;", "begin");
-      sprintf(sql, "INSERT INTO t VALUES(%d,'%s');", i, filler);
+      sprintf(sql, "INSERT INTO t VALUES(%d,'%s');", nWarm + i, filler);
       xexec(db, sql, "insert");
       xexec(db, "COMMIT;", "commit");
     }
