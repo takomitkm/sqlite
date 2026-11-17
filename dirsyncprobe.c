@@ -68,6 +68,16 @@
 # define EXPECT_DIR_FLUSH 1
 #endif
 
+/* Set to 1 when building against the dir+root library: each
+** winSyncDirectory() hook then flushes the parent directory AND the
+** volume root.  The absolute-name checks (S1-S3, S5, S6, S8) expect the
+** extra flush; the relative-name checks (S7) keep the plain count because
+** the root flush is skipped for names without a drive prefix. */
+#ifndef EXPECT_ROOT_FLUSH
+# define EXPECT_ROOT_FLUSH 0
+#endif
+#define EXPECT_DIR_FLUSHES (EXPECT_DIR_FLUSH * (1 + EXPECT_ROOT_FLUSH))
+
 typedef HANDLE (WINAPI *PFNCREATEFILEW)(
   LPCWSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE);
 typedef BOOL (WINAPI *PFNFLUSHFILEBUFFERS)(HANDLE);
@@ -225,12 +235,12 @@ int main(int argc, char **argv){
   if( pFile ){
     rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
     check( rc==SQLITE_OK, "S1.1 first xSync() of a new journal succeeds" );
-    check( nDirFlush==EXPECT_DIR_FLUSH,
+    check( nDirFlush==EXPECT_DIR_FLUSHES,
            "S1.2 the parent directory is synced by the first xSync()" );
     /* S2: a later xSync() of the same file must not sync it again. */
     rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
     check( rc==SQLITE_OK, "S2.1 a second xSync() of the same journal succeeds" );
-    check( nDirFlush==EXPECT_DIR_FLUSH,
+    check( nDirFlush==EXPECT_DIR_FLUSHES,
            "S2.2 the parent directory is not synced again" );
     pFile->pMethods->xClose(pFile);
     free(pFile);
@@ -241,7 +251,7 @@ int main(int argc, char **argv){
   resetCounters();
   rc = winVfs->xDelete(winVfs, zAbs1, 1);
   check( rc==SQLITE_OK, "S3.1 xDelete() with syncDir=1 succeeds" );
-  check( nDirFlush==EXPECT_DIR_FLUSH,
+  check( nDirFlush==EXPECT_DIR_FLUSHES,
          "S3.2 xDelete() with syncDir=1 syncs the parent directory" );
 
   /* S4: xDelete() with syncDir=0 never syncs a directory. */
@@ -267,7 +277,7 @@ int main(int argc, char **argv){
              "S5.1 a failing directory open is reported as SQLITE_IOERR_DIR_FSYNC" );
       rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
       check( rc==SQLITE_OK, "S5.2 the next xSync() retries the failed sync" );
-      check( nDirFlush==1,
+      check( nDirFlush==1 + EXPECT_ROOT_FLUSH,
              "S5.3 the retry syncs the parent directory exactly once" );
     }else{
       check( rc==SQLITE_OK,
@@ -293,7 +303,7 @@ int main(int argc, char **argv){
       rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
       check( rc==SQLITE_OK,
              "S6.2 the failed directory flush is retried by the next xSync()" );
-      check( nDirFlush==2,
+      check( nDirFlush==2 + EXPECT_ROOT_FLUSH,
              "S6.3 the retry performs exactly one more directory flush" );
     }else{
       check( rc==SQLITE_OK,
@@ -355,7 +365,7 @@ int main(int argc, char **argv){
         rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
         check( rc==SQLITE_OK,
                "S8.3 xSync() of the resolved journal name succeeds" );
-        check( nDirFlush==EXPECT_DIR_FLUSH,
+        check( nDirFlush==EXPECT_DIR_FLUSHES,
                "S8.4 the parent directory of the resolved name is synced" );
         pFile->pMethods->xClose(pFile);
         free(pFile);
@@ -365,7 +375,7 @@ int main(int argc, char **argv){
       rc = winVfs->xDelete(winVfs, zFull, 1);
       check( rc==SQLITE_OK,
              "S8.5 xDelete() of the resolved name succeeds" );
-      check( nDirFlush==EXPECT_DIR_FLUSH,
+      check( nDirFlush==EXPECT_DIR_FLUSHES,
              "S8.6 the parent directory is synced on delete" );
       winVfs->xDelete(winVfs, zFull, 0);
     }

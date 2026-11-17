@@ -90,7 +90,7 @@ jobs:
           for /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -property installationPath`) do set VSPATH=%%i
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
           cl /nologo /O2 dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe.exe
-          cl /nologo /O2 dirsyncprobe.c sqlite3-dirroot.c /Fe:dirsyncprobe-dirroot.exe
+          cl /nologo /O2 /DEXPECT_ROOT_FLUSH=1 dirsyncprobe.c sqlite3-dirroot.c /Fe:dirsyncprobe-dirroot.exe
           cl /nologo /O2 /DSQLITE_DISABLE_DIRSYNC dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe-disabled.exe
           cl /nologo /O2 /DSQLITE_NO_SYNC dirsyncprobe.c sqlite3-patch.c /Fe:dirsyncprobe-nosync.exe
 
