@@ -13,7 +13,7 @@ jobs:
           ref: bench
 
       - name: generate bench variants (fail closed on anchor mismatch)
-        shell: python
+        shell: pwsh
         run: |
           python e24_root_patch.py --variant base --input sqlite3-base.c --output sqlite3-base-count.c
           python e24_root_patch.py --variant dir --input sqlite3-patch.c --output sqlite3-dir.c
