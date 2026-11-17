@@ -136,6 +136,10 @@ def main():
 
     with open(a.input, encoding='utf-8', newline='') as f:
         text = f.read()
+    # Actions runners check out with core.autocrlf=true (LF blobs arrive as
+    # CRLF); anchors are LF, so normalize the working copy before matching.
+    # The generated variants are build inputs only, never committed.
+    text = text.replace('\r\n', '\n')
 
     if a.variant == 'base':
         text = replace_once(text, BASE_ANCHOR, COUNTER_DEF + BASE_ANCHOR,
