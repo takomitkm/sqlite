@@ -20,11 +20,9 @@
 **      reported as SQLITE_IOERR_DIR_FSYNC, and the failed sync stays
 **      pending so that a later xSync() can retry it (both failure
 **      modes are followed by a retry check).
-**   4) A direct-call robustness test of the no-separator fallback: a bare
-**      relative name that reaches winSyncDirectory() resolves to the current
-**      working directory.  SQLite core never supplies such a name to
-**      xOpen() - xFullPathname() normalizes input first, and the S8 checks
-**      cover that supported call sequence.
+**   4) That the parent directory of a journal created from a relative name
+**      is synced.  The name is first normalized through xFullPathname(),
+**      which is the VFS contract for xOpen()/xDelete() inputs.
 **   5) When SQLITE_DISABLE_DIRSYNC or SQLITE_NO_SYNC is compiled in,
 **      neither path syncs anything.
 **   6) A Windows drive-relative name ("C:foo") is first normalized by
@@ -67,16 +65,6 @@
 #else
 # define EXPECT_DIR_FLUSH 1
 #endif
-
-/* Set to 1 when building against the dir+root library: each
-** winSyncDirectory() hook then flushes the parent directory AND the
-** volume root.  The absolute-name checks (S1-S3, S5, S6, S8) expect the
-** extra flush; the relative-name checks (S7) keep the plain count because
-** the root flush is skipped for names without a drive prefix. */
-#ifndef EXPECT_ROOT_FLUSH
-# define EXPECT_ROOT_FLUSH 0
-#endif
-#define EXPECT_DIR_FLUSHES (EXPECT_DIR_FLUSH * (1 + EXPECT_ROOT_FLUSH))
 
 typedef HANDLE (WINAPI *PFNCREATEFILEW)(
   LPCWSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE);
@@ -154,17 +142,18 @@ static void check(int cond, const char *zMsg){
   if( !cond ) nFail++;
 }
 
-static void absName(const char *zRel, char *zOut, int nOut){
-  DWORD n = GetCurrentDirectoryA((DWORD)nOut, zOut);
-  if( n==0 || n>=(DWORD)nOut-2 ){
-    memset(zOut, 0, (size_t)nOut);
-    return;
+/* Every filename passed to xOpen() or xDelete() must first be run through
+** xFullPathname() - that is the VFS contract, and violating it is what the
+** ASAN build of win-dirsync.c reported. */
+static int vfsFullPath(const char *zRel, char *zOut, int nOut){
+  int rc = winVfs->xFullPathname(winVfs, zRel, nOut, zOut);
+  if( rc!=SQLITE_OK ){
+    printf("FAIL xFullPathname(%s) -> %s\n", zRel, sqlite3_errstr(rc));
+    fflush(stdout);
+    nFail++;
+    zOut[0] = 0;
   }
-  if( zOut[n-1]!='\\' ){
-    zOut[n++] = '\\';
-    zOut[n] = 0;
-  }
-  strncat(zOut, zRel, (size_t)(nOut-n-1));
+  return rc==SQLITE_OK;
 }
 
 static sqlite3_file *openJournal(const char *zName){
@@ -225,9 +214,9 @@ int main(int argc, char **argv){
     return 1;
   }
 
-  absName("dirsync-probe1-journal", zAbs1, sizeof(zAbs1));
-  absName("dirsync-probe2-journal", zAbs2, sizeof(zAbs2));
-  absName("dirsync-probe3-journal", zAbs3, sizeof(zAbs3));
+  vfsFullPath("dirsync-probe1-journal", zAbs1, sizeof(zAbs1));
+  vfsFullPath("dirsync-probe2-journal", zAbs2, sizeof(zAbs2));
+  vfsFullPath("dirsync-probe3-journal", zAbs3, sizeof(zAbs3));
 
   /* S1: the first xSync() of a new journal syncs the parent directory. */
   resetCounters();
@@ -235,12 +224,12 @@ int main(int argc, char **argv){
   if( pFile ){
     rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
     check( rc==SQLITE_OK, "S1.1 first xSync() of a new journal succeeds" );
-    check( nDirFlush==EXPECT_DIR_FLUSHES,
+    check( nDirFlush==EXPECT_DIR_FLUSH,
            "S1.2 the parent directory is synced by the first xSync()" );
     /* S2: a later xSync() of the same file must not sync it again. */
     rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
     check( rc==SQLITE_OK, "S2.1 a second xSync() of the same journal succeeds" );
-    check( nDirFlush==EXPECT_DIR_FLUSHES,
+    check( nDirFlush==EXPECT_DIR_FLUSH,
            "S2.2 the parent directory is not synced again" );
     pFile->pMethods->xClose(pFile);
     free(pFile);
@@ -251,7 +240,7 @@ int main(int argc, char **argv){
   resetCounters();
   rc = winVfs->xDelete(winVfs, zAbs1, 1);
   check( rc==SQLITE_OK, "S3.1 xDelete() with syncDir=1 succeeds" );
-  check( nDirFlush==EXPECT_DIR_FLUSHES,
+  check( nDirFlush==EXPECT_DIR_FLUSH,
          "S3.2 xDelete() with syncDir=1 syncs the parent directory" );
 
   /* S4: xDelete() with syncDir=0 never syncs a directory. */
@@ -277,7 +266,7 @@ int main(int argc, char **argv){
              "S5.1 a failing directory open is reported as SQLITE_IOERR_DIR_FSYNC" );
       rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
       check( rc==SQLITE_OK, "S5.2 the next xSync() retries the failed sync" );
-      check( nDirFlush==1 + EXPECT_ROOT_FLUSH,
+      check( nDirFlush==1,
              "S5.3 the retry syncs the parent directory exactly once" );
     }else{
       check( rc==SQLITE_OK,
@@ -303,7 +292,7 @@ int main(int argc, char **argv){
       rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
       check( rc==SQLITE_OK,
              "S6.2 the failed directory flush is retried by the next xSync()" );
-      check( nDirFlush==2 + EXPECT_ROOT_FLUSH,
+      check( nDirFlush==2,
              "S6.3 the retry performs exactly one more directory flush" );
     }else{
       check( rc==SQLITE_OK,
@@ -314,28 +303,31 @@ int main(int argc, char **argv){
     pFile = 0;
   }
 
-  /* S7: a direct-call robustness test for the no-separator fallback in
-  ** winSyncDirectory().  This is not a pathname that SQLite core supplies
-  ** to xOpen(): the normal input is normalized by xFullPathname(), and the
-  ** S8 checks cover that supported call sequence.  The assertions below
-  ** only pin what the defensive L"." branch does when a bare relative name
-  ** reaches it anyway. */
-  resetCounters();
-  pFile = openJournal("dirsync-probe-rel-journal");
-  if( pFile ){
-    rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
-    check( rc==SQLITE_OK, "S7.1 xSync() of a relative journal name succeeds" );
-    check( nDirFlush==EXPECT_DIR_FLUSH,
-           "S7.2 the current working directory is synced" );
-    pFile->pMethods->xClose(pFile);
-    free(pFile);
-    pFile = 0;
+  /* S7: a relative name, normalized through xFullPathname() as required
+  ** by the VFS contract, then opened and deleted.  The parent directory
+  ** of the resolved name (the current working directory here) is synced. */
+  {
+    char zRelFull[600];
+    if( vfsFullPath("dirsync-probe-rel-journal", zRelFull, sizeof(zRelFull)) ){
+      resetCounters();
+      pFile = openJournal(zRelFull);
+      if( pFile ){
+        rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
+        check( rc==SQLITE_OK, "S7.1 xSync() of a relative journal name succeeds" );
+        check( nDirFlush==EXPECT_DIR_FLUSH,
+               "S7.2 the parent directory of the resolved name is synced" );
+        pFile->pMethods->xClose(pFile);
+        free(pFile);
+        pFile = 0;
+      }
+      resetCounters();
+      rc = winVfs->xDelete(winVfs, zRelFull, 1);
+      check( rc==SQLITE_OK, "S7.3 xDelete() of a relative name succeeds" );
+      check( nDirFlush==EXPECT_DIR_FLUSH,
+             "S7.4 the parent directory is synced on delete" );
+      winVfs->xDelete(winVfs, zRelFull, 0);
+    }
   }
-  resetCounters();
-  rc = winVfs->xDelete(winVfs, "dirsync-probe-rel-journal", 1);
-  check( rc==SQLITE_OK, "S7.3 xDelete() of a relative name succeeds" );
-  check( nDirFlush==EXPECT_DIR_FLUSH,
-         "S7.4 the current working directory is synced on delete" );
 
   /* S8: a Windows drive-relative name ("C:foo") is not a valid xOpen()
   ** input - SQLite requires xFullPathname() to have been applied first,
@@ -359,21 +351,13 @@ int main(int argc, char **argv){
     /* zFull is not a valid string unless xFullPathname() succeeded and
     ** produced a full path.  Do not read or pass it on any other path. */
     if( isFull ){
-      /* The resolved drive-relative name may sit directly in the volume
-      ** root (the per-drive cwd starts at the root), in which case the
-      ** parent flush IS the root flush and no second one is made. */
-      int expectS8 = EXPECT_DIR_FLUSHES;
-      {
-        const char *sep = strrchr(zFull, '\\');
-        if( sep!=0 && sep==zFull+2 ) expectS8 = EXPECT_DIR_FLUSH;
-      }
       resetCounters();
       pFile = openJournal(zFull);
       if( pFile ){
         rc = pFile->pMethods->xSync(pFile, SQLITE_SYNC_NORMAL);
         check( rc==SQLITE_OK,
                "S8.3 xSync() of the resolved journal name succeeds" );
-        check( nDirFlush==expectS8,
+        check( nDirFlush==EXPECT_DIR_FLUSH,
                "S8.4 the parent directory of the resolved name is synced" );
         pFile->pMethods->xClose(pFile);
         free(pFile);
@@ -383,7 +367,7 @@ int main(int argc, char **argv){
       rc = winVfs->xDelete(winVfs, zFull, 1);
       check( rc==SQLITE_OK,
              "S8.5 xDelete() of the resolved name succeeds" );
-      check( nDirFlush==expectS8,
+      check( nDirFlush==EXPECT_DIR_FLUSH,
              "S8.6 the parent directory is synced on delete" );
       winVfs->xDelete(winVfs, zFull, 0);
     }
@@ -393,7 +377,6 @@ int main(int argc, char **argv){
   winVfs->xDelete(winVfs, zAbs1, 0);
   winVfs->xDelete(winVfs, zAbs2, 0);
   winVfs->xDelete(winVfs, zAbs3, 0);
-  winVfs->xDelete(winVfs, "dirsync-probe-rel-journal", 0);
 
   printf("%s: %d check(s) failed\n", nFail ? "FAILED" : "PASSED", nFail);
   fflush(stdout);
